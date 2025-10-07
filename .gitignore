@@ -1,0 +1,17 @@
+# Docker / Akvorado
+.env
+*.env
+*.local
+docker-data/
+data/
+volumes/
+logs/
+*.log
+# Compose artefacts
+*.pid
+*.sock
+# Editors/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
