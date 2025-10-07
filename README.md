@@ -21,7 +21,8 @@ FlexDC.ru
 ## 🚦 Быстрый старт
 
 ```bash
-git clone git@github.com:AlexanderGalchenko/FlexDC_Akvorado.git
+mkdir -p /docker/
+cd /docker/
+git clone https://github.com/AlexanderGalchenko/FlexDC_Akvorado.git
 cd FlexDC_Akvorado
-cp .env.example .env
 docker compose up -d
