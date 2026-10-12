@@ -5,7 +5,7 @@ services:
       file: versions.yml
       service: ipinfo-geoipupdate
     environment:
-      - IPINFO_TOKEN=a2632ea59736c7
+      - IPINFO_TOKEN=${IPINFO_TOKEN:?Set IPINFO_TOKEN in your local environment before enabling IPinfo}
       - IPINFO_DATABASES=country asn
       - UPDATE_FREQUENCY=48h
     volumes:

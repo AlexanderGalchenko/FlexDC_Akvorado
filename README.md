@@ -1,28 +1,79 @@
-# FlexDC_Akvorado
-07.10.2025
-FlexDC.ru
+# FlexDC Akvorado
 
----
+Профиль Docker Compose для **отдельного сервера** Akvorado. Он подключается к ISP Support как необязательный сервис конкретной компании; устанавливать этот стек на основной клиентской ноде не следует.
 
-## ⚙️ Состав Docker-окружения
+## Версии
 
-| Компонент | Назначение |
-|------------|------------|
-| **akvorado-collector** | Получает NetFlow/sFlow/IPFIX |
-| **akvorado-ingestor** | Обрабатывает и сохраняет данные |
-| **akvorado-web** | Веб-интерфейс мониторинга |
-| **clickhouse** | Хранилище данных потоков |
-| **grafana** | Визуализация метрик и отчётов |
-| **prometheus** | Мониторинг контейнеров |
-| **loki** *(опционально)* | Логирование контейнеров |
+Сохранена совместимость с существующими данными Akvorado **1.11.3**, Kafka 3.7 и ClickHouse 24.8. Traefik закреплён на 3.7.14 по digest и совместим с Docker 29.
 
----
+Это профиль восстановления существующей установки, а не переход на актуальную архитектуру Akvorado. Текущий upstream использует другую архитектуру и требует отдельной миграции конфигурации и данных. Старые образы Bitnami перенесены в `bitnamilegacy`; это архив без новых исправлений безопасности. Для долговременной новой установки нужно запланировать переход на поддерживаемый стек, а не менять только тег Akvorado.
 
-## 🚦 Быстрый старт
+## Компоненты
 
-```bash
-mkdir -p /docker/
-cd /docker/
-git clone https://github.com/AlexanderGalchenko/FlexDC_Akvorado.git
-cd FlexDC_Akvorado
-docker compose up -d
+| Сервис | Назначение |
+| --- | --- |
+| akvorado-inlet | Приём, декодирование и обогащение NetFlow/IPFIX/sFlow |
+| akvorado-orchestrator | Конфигурация компонентов и таблиц ClickHouse |
+| akvorado-console | Веб-интерфейс |
+| Kafka и ZooKeeper | Буфер потоков |
+| ClickHouse | Хранение и агрегация |
+| Redis/Valkey | Работа веб-консоли |
+| Traefik | HTTP-маршрутизация |
+| akvorado-conntrack-fixer | Обработка UDP conntrack для Docker |
+
+GeoIP, демонстрационные экспортёры, Prometheus и Grafana включаются отдельно. Demo по умолчанию выключен и в Compose, и в конфигурации Akvorado.
+
+## Установка профиля совместимости
+
+Нужны Docker Engine и Compose v2. Размер CPU, RAM и диска выбирается по числу потоков и сроку хранения; ClickHouse и Kafka должны иметь запас диска.
+
+```sh
+mkdir -p /docker
+git clone https://github.com/AlexanderGalchenko/FlexDC_Akvorado.git /docker/FlexDC_Akvorado
+cd /docker/FlexDC_Akvorado
+# Сначала настройте config/inlet.yaml, config/akvorado.yaml и локальные overrides.
+./bin/compose config --quiet
+./bin/compose pull
+./bin/compose up -d
+./bin/compose ps
+```
+
+Для дальнейшей работы используйте абсолютный путь к `bin/compose`: он загружает корневой `.env` независимо от текущей директории. Имя проекта `akvorado` также закреплено в базовом Compose, поэтому запуск из `docker/` не создаёт случайный проект `docker`. Изменение имени проекта меняет имена томов: для существующей установки сохраняйте её исходное имя.
+
+Локальные параметры размещайте в `docker/docker-compose-local.yml`. Секреты не коммитьте.
+
+## Сеть и доступ
+
+* Веб-консоль: TCP 8081. В примере заданы демонстрационные заголовки пользователя; предоставляйте доступ только через доверенную сеть/VPN либо свой аутентифицирующий reverse proxy.
+* NetFlow/IPFIX: UDP 2055; sFlow: UDP 6343. Экспортёры должны отправлять данные на IP интерфейса сервера в соответствующей сети.
+* BMP: TCP 10179, если используется.
+* Служебный HTTP: TCP 8080 только на loopback.
+* Для метаданных нужен SNMP-доступ от сервера к экспортёрам с параметрами из `config/inlet.yaml`.
+
+Проверьте VLAN, ARP и привязку адреса приёма к правильной сетевой карте. Netplan читает все файлы `*.yaml` в `/etc/netplan/`: файл с префиксом `OLD_` также применяется. Резервные копии храните вне этой директории.
+
+## GeoIP
+
+По умолчанию GeoIP необязателен и загрузчик отключён. Для IPinfo задайте свой `IPINFO_TOKEN` в окружении и раскомментируйте строку IPinfo в `.env`. Для MaxMind выберите соответствующий Compose и пути баз. Ранее опубликованный токен IPinfo следует отозвать у провайдера и заменить; удаление из текущего файла не удаляет его из истории Git.
+
+## Проверка
+
+```sh
+./bin/compose ps
+curl --fail http://127.0.0.1:8081/ -o /dev/null
+./bin/compose logs --since 10m akvorado-inlet akvorado-orchestrator traefik
+./bin/compose exec -T clickhouse clickhouse-client --query \
+  "SELECT count(), max(TimeReceived) FROM flows WHERE TimeReceived > now() - INTERVAL 15 MINUTE"
+```
+
+HTTP 200 и healthy-контейнеры не доказывают наличие трафика. Проверьте UDP-пакеты на интерфейсе приёма, затем свежие строки ClickHouse и имена экспортёров.
+
+В ISP Support: компания → «Сеть» → «Akvorado / трафик». Укажите SSH-адрес отдельного сервера, имя Compose-проекта, каталог установки и URL консоли. Проверки выполняются основной машиной ISP Support по существующему SSH-ключу со строгой проверкой known_hosts. Страница показывает ресурсы, контейнеры и свежесть данных; отсутствие потоков выделяется отдельным статусом.
+
+## Обновление существующего сервера
+
+Сохраните текущие конфигурации, имя Compose-проекта и список томов. Сначала проверьте итоговый `config` и доступность образов. Не запускайте второй Compose-проект над теми же портами. **Не используйте `down -v`** для ремонта: это удаляет тома с историей.
+
+Обновление Traefik и исправление порядка запуска не требуют миграции таблиц Akvorado. Переход с 1.11.3 на современный выпуск проверяйте отдельно на копии данных с готовым планом отката.
+
+Источники: [Akvorado releases](https://github.com/akvorado/akvorado/releases), [изменение каталога Bitnami](https://github.com/bitnami/containers/issues/83267).

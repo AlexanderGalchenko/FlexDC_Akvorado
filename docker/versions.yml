@@ -1,16 +1,19 @@
 ---
 services:
+  # Compatibility profile for Akvorado 1.11.3.
+  # Legacy Bitnami images are archived, without further security updates.
+  # Plan their replacement together with the Akvorado major-version migration.
   # main services
   zookeeper:
-    image: bitnami/zookeeper:3.8 # \d+\.\d+
+    image: bitnamilegacy/zookeeper:3.8 # \d+\.\d+
   kafka:
-    image: bitnami/kafka:3.7 # \d+\.\d+
+    image: bitnamilegacy/kafka:3.7 # \d+\.\d+
   redis:
-    image: bitnami/valkey:7.2 # \d+\.\d+
+    image: bitnamilegacy/valkey:7.2 # \d+\.\d+
   clickhouse:
     image: clickhouse/clickhouse-server:24.8 # \d+\.[38]
   traefik:
-    image: traefik:v3.1 # v\d+\.\d+
+    image: traefik:v3.7.14@sha256:575fa15b135078fe5e50aa847987d96dbddd7b093c172429618404df73f3fa7c
   maxmind-geoipupdate:
     image: ghcr.io/maxmind/geoipupdate:v7
   ipinfo-geoipupdate:

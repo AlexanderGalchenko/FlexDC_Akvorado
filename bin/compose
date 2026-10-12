@@ -1,0 +1,6 @@
+#!/bin/sh
+# Resolve configuration relative to this checkout, independently of caller cwd.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+exec docker compose --env-file "$root/.env" "$@"
