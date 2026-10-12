@@ -5,11 +5,11 @@ services:
   # Plan their replacement together with the Akvorado major-version migration.
   # main services
   zookeeper:
-    image: bitnamilegacy/zookeeper:3.8 # \d+\.\d+
+    image: bitnamilegacy/zookeeper:3.8@sha256:4d450d4b1dab610e1012993d2ea78ba00a516b63e74214a57fef40c060ce4986
   kafka:
-    image: bitnamilegacy/kafka:3.7 # \d+\.\d+
+    image: bitnamilegacy/kafka:3.7@sha256:c274f870840a5d854fb601408c398e596c795582d869b5d85c7f7d882e5c478d
   redis:
-    image: bitnamilegacy/valkey:7.2 # \d+\.\d+
+    image: bitnamilegacy/valkey:7.2@sha256:c46979d3bd5c59efc0459709bfb76606d7d6a9d81c2f779faab8d59900e58e59
   clickhouse:
     image: clickhouse/clickhouse-server:24.8 # \d+\.[38]
   traefik:
