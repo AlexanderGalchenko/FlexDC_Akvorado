@@ -1,0 +1,35 @@
+---
+services:
+  isp-branding:
+    image: nginx:1.30.5-alpine-slim@sha256:32463212baf0e7d91aded2e9b843a4f2b9e017804b8c9d5bae7b51dcef64389c
+    entrypoint: [nginx]
+    command: [-g, "daemon off;"]
+    user: "101:101"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 64m
+    cpus: 0.25
+    pids_limit: 32
+    tmpfs:
+      - /tmp:rw,nosuid,noexec,size=16m,mode=1777
+    volumes:
+      - ../branding/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../branding/branding.js:/usr/share/nginx/html/branding.js:ro
+    depends_on:
+      akvorado-console:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/__isp/branding-health]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.isp-bgp-branding.entrypoints=public
+      - traefik.http.routers.isp-bgp-branding.rule=!PathPrefix(`/api/`) && !PathPrefix(`/debug`)
+      - traefik.http.routers.isp-bgp-branding.priority=100
+      - traefik.http.routers.isp-bgp-branding.middlewares=console-auth-headers
+      - traefik.http.services.isp-bgp-branding.loadbalancer.server.port=8080
