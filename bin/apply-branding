@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Apply the presentation layer to an existing stack, without updating its services."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import tempfile
+import time
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("root", type=Path, help="Existing installation root containing .env")
+    parser.add_argument("--project-name", required=True, help="EXISTING Compose project name")
+    parser.add_argument("--backup-dir", type=Path, default=Path("/var/backups/akvorado-branding"))
+    args = parser.parse_args()
+    root = args.root.resolve(strict=True)
+    source = Path(__file__).resolve().parent.parent
+    project = args.project_name
+    files = ("branding/nginx.conf", "branding/branding.js", "docker/docker-compose-branding.yml")
+    env_path = root / ".env"
+    original_env = env_path.read_text()
+    for name in files:
+        if not (source / name).is_file():
+            raise RuntimeError(f"Missing source file: {name}")
+    # A caller's Compose settings must not redirect commands to another stack.
+    environment = {k: v for k, v in os.environ.items() if not k.startswith("COMPOSE_")}
+
+    def run(argv, capture=True):
+        return subprocess.run(argv, cwd=root, env=environment, check=True, text=True,
+                              stdout=subprocess.PIPE if capture else None).stdout
+
+    compose = ["docker", "compose", "--env-file", str(env_path), "--project-name", project]
+
+    def snapshot():
+        ids = run(["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"]).split()
+        if not ids:
+            raise RuntimeError("No existing containers found; refusing to create a new project")
+        result = {}
+        for item in json.loads(run(["docker", "inspect", *ids])):
+            labels = item["Config"]["Labels"]
+            result[item["Id"]] = {
+                "service": labels.get("com.docker.compose.service"),
+                "name": item["Name"], "started_at": item["State"]["StartedAt"],
+                "running": item["State"]["Running"], "image": item["Image"],
+                "mounts": sorted([{k: m.get(k) for k in ("Type", "Name", "Source", "Destination")}
+                                  for m in item["Mounts"]], key=lambda m: m["Destination"]),
+            }
+        return result
+
+    before = snapshot()
+    consoles = [v for v in before.values() if v["service"] == "akvorado-console" and v["running"]]
+    if len(consoles) != 1:
+        raise RuntimeError("Expected one running akvorado-console in the existing project")
+    run(compose + ["config", "--quiet"])
+    lines = original_env.splitlines(keepends=True)
+    include = "docker/docker-compose-branding.yml"
+    enabled = any(re.match(r"^\s*COMPOSE_FILE\s*=", line) and include in line for line in lines)
+    if not enabled:
+        if not any(re.match(r"^\s*COMPOSE_FILE\s*=", line) for line in lines):
+            raise RuntimeError("Expected COMPOSE_FILE in the existing root .env")
+        index = next((i for i, line in enumerate(lines)
+                      if re.match(r"^\s*COMPOSE_FILE\s*=", line) and "docker-compose-local.yml" in line), len(lines))
+        if index and not lines[index - 1].endswith("\n"):
+            lines[index - 1] += "\n"
+        lines[index:index] = ["## ISP Support console branding\n",
+                             "COMPOSE_FILE=${COMPOSE_FILE}:docker/docker-compose-branding.yml\n"]
+    new_env = "".join(lines)
+
+    args.backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    backup = Path(tempfile.mkdtemp(prefix=time.strftime("%Y%m%d-%H%M%S-"), dir=args.backup_dir.resolve()))
+    existing = [".env"] + [name for name in files if (root / name).exists()]
+    for name in existing:
+        dest = backup / "files" / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / name, dest)
+    # Retain the original Compose configuration for reference, including local overrides.
+    shutil.copytree(root / "docker", backup / "docker-before", symlinks=True)
+    (backup / "containers-before.json").write_text(json.dumps(before, indent=2) + "\n")
+    volume_names = sorted({m["Name"] for v in before.values() for m in v["mounts"] if m["Type"] == "volume"})
+    volumes = json.loads(run(["docker", "volume", "inspect", *volume_names])) if volume_names else []
+    (backup / "volumes-before.json").write_text(json.dumps(volumes, indent=2) + "\n")
+
+    quote = shlex.quote
+    stop = ["docker", "ps", "-q", "--filter", f"label=com.docker.compose.project={project}",
+            "--filter", "label=com.docker.compose.service=isp-branding"]
+    rollback = ["#!/bin/sh", "set -eu",
+                "unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES COMPOSE_PROFILES COMPOSE_PATH_SEPARATOR",
+                f"cd {quote(str(root))}",
+                "ids=$(" + shlex.join(stop) + ")", '[ -z "$ids" ] || docker stop $ids']
+    for name in existing:
+        rollback.append(shlex.join(["cp", "-p", str(backup / "files" / name), str(root / name)]))
+    if any(v["service"] == "isp-branding" and v["running"] for v in before.values()):
+        rollback.append(shlex.join(compose + ["up", "-d", "--no-deps", "--force-recreate", "isp-branding"]))
+    rollback_path = backup / "rollback.sh"
+    rollback_path.write_text("\n".join(rollback) + "\n")
+    rollback_path.chmod(0o700)
+    print(f"Backup and rollback: {backup}", flush=True)
+
+    try:
+        for name in files:
+            dest = root / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if (source / name).resolve() != dest.resolve():
+                shutil.copy2(source / name, dest)
+        if new_env != original_env:
+            env_path.write_text(new_env)
+        config = json.loads(run(compose + ["config", "--format", "json"]))
+        service = config["services"]["isp-branding"]
+        if service.get("ports"):
+            raise RuntimeError("Branding must not publish ports")
+        # Scope every operation to this one presentation service. Never update dependencies.
+        run(compose + ["up", "-d", "--no-deps", "--force-recreate", "isp-branding"], capture=False)
+        cid = run(compose + ["ps", "-q", "isp-branding"]).strip()
+        if not cid:
+            raise RuntimeError("Branding container was not created")
+        for attempt in range(45):
+            state = json.loads(run(["docker", "inspect", cid]))[0]["State"]
+            if state.get("Health", {}).get("Status") == "healthy":
+                break
+            if not state["Running"]:
+                raise RuntimeError("Branding container stopped")
+            time.sleep(1)
+        else:
+            raise RuntimeError("Branding healthcheck did not pass")
+        after = snapshot()
+        (backup / "containers-after.json").write_text(json.dumps(after, indent=2) + "\n")
+        core_before = {k: v for k, v in before.items() if v["service"] != "isp-branding"}
+        core_after = {k: v for k, v in after.items() if v["service"] != "isp-branding"}
+        if core_before != core_after:
+            raise RuntimeError("Existing container state changed; inspect the before/after snapshots")
+        volumes_after = json.loads(run(["docker", "volume", "inspect", *volume_names])) if volume_names else []
+        (backup / "volumes-after.json").write_text(json.dumps(volumes_after, indent=2) + "\n")
+        if volumes != volumes_after:
+            raise RuntimeError("Existing volume metadata changed; inspect the snapshots")
+        print(f"OK: branding healthy; {len(core_before)} existing containers and {len(volumes)} volumes unchanged")
+        print("Verify the live browser header, page title, navigation, API and incoming flows.")
+    except BaseException:
+        print(f"Applying rollback: {rollback_path}", flush=True)
+        subprocess.run([str(rollback_path)], cwd=root, env=environment, check=True)
+        raise
+
+
+if __name__ == "__main__":
+    main()
